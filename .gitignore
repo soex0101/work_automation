@@ -1,0 +1,6 @@
+config.ini
+__pycache__
+backup
+_downloads
+logs
+share_data
