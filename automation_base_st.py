@@ -494,6 +494,20 @@ def ensure_gebaeudereferenzen_table(conn, table_name: str) -> None:
     conn.commit()
 
 
+_COPY_ESCAPES = str.maketrans({"\\": "\\\\", "\t": "\\t", "\n": "\\n", "\r": "\\r"})
+
+
+def _copy_line(values) -> str:
+    """
+    One row in COPY's text format: tab-separated, None as \\N, and backslash,
+    tab, newline and CR backslash-escaped. Not csv.writer -- its escapechar
+    turns \\N into \\\\N (a literal string, not NULL) and its quotes mean
+    nothing to COPY's text format.
+    """
+    return "\t".join(r"\N" if v is None else str(v).translate(_COPY_ESCAPES)
+                     for v in values) + "\n"
+
+
 def copy_gebaeudereferenzen_txt(conn, table_name: str, txt_path: Path, batch_lines: int = 200000) -> int:
     """
     Streaming parse of the TXT using your fixed positions.
@@ -534,7 +548,6 @@ def copy_gebaeudereferenzen_txt(conn, table_name: str, txt_path: Path, batch_lin
         conn.commit()
 
     sio = StringIO()
-    writer = csv.writer(sio, delimiter="\t", lineterminator="\n", quoting=csv.QUOTE_MINIMAL, escapechar="\\")
     n_in_buf = 0
 
     with open(txt_path, encoding="utf-8", errors="ignore", newline="") as csvfile:
@@ -565,26 +578,25 @@ def copy_gebaeudereferenzen_txt(conn, table_name: str, txt_path: Path, batch_lin
             except Exception:
                 continue
 
-            writer.writerow([
+            sio.write(_copy_line([
                 _id,
-                landschl or r"\N",
-                regbezschl or r"\N",
-                kreisschl or r"\N",
-                gmdschl or r"\N",
-                ottschl or r"\N",
-                strschl or r"\N",
-                street or r"\N",
-                hnr or r"\N",
+                landschl or None,
+                regbezschl or None,
+                kreisschl or None,
+                gmdschl or None,
+                ottschl or None,
+                strschl or None,
+                street or None,
+                hnr or None,
                 x,
                 y,
-            ])
+            ]))
             n_in_buf += 1
             total += 1
 
             if n_in_buf >= batch_lines:
                 flush_copy(sio, n_in_buf)
                 sio = StringIO()
-                writer = csv.writer(sio, delimiter="\t", lineterminator="\n", quoting=csv.QUOTE_MINIMAL, escapechar="\\")
                 n_in_buf = 0
 
     if n_in_buf:
@@ -723,14 +735,12 @@ def _bld_feature_to_row(feature_elem, prop_cols: List[str]) -> Tuple[str, Option
 
 def copy_gbis_batch(conn, table_name: str, copy_cols: List[str], prop_cols: List[str], rows: List[Tuple]) -> None:
     sio = StringIO()
-    w = csv.writer(sio, delimiter="\t", lineterminator="\n", quoting=csv.QUOTE_MINIMAL, escapechar="\\")
     for (oid, gml_id, feature_type, aktualit_iso, props, geom_wkt) in rows:
-        line = [oid, gml_id or r"\N", feature_type or r"\N", aktualit_iso or r"\N"]
+        line = [oid, gml_id or None, feature_type or None, aktualit_iso or None]
         for p in prop_cols:
-            v = props.get(p)
-            line.append(v if v is not None else r"\N")
-        line.append(geom_wkt if geom_wkt else r"\N")
-        w.writerow(line)
+            line.append(props.get(p))
+        line.append(geom_wkt or None)
+        sio.write(_copy_line(line))
     sio.seek(0)
     with conn.cursor() as cur:
         cur.copy_from(sio, table_name, columns=copy_cols, null="\\N")
@@ -1162,16 +1172,8 @@ def _prc_feature_to_row(feature_elem) -> Tuple:
 
 def _prc_copy_rows(conn, table_name: str, rows: List[Tuple]) -> None:
     sio = StringIO()
-    w = csv.writer(sio, delimiter="\t", lineterminator="\n", quoting=csv.QUOTE_MINIMAL, escapechar="\\")
     for r in rows:
-        # Replace None with \N for COPY nulls (except numeric which can be \N too)
-        out = []
-        for v in r:
-            if v is None:
-                out.append(r"\N")
-            else:
-                out.append(v)
-        w.writerow(out)
+        sio.write(_copy_line(r))
     sio.seek(0)
 
     with conn.cursor() as cur:
@@ -1517,16 +1519,15 @@ def _usg_copy_rows(conn, table_name: str, rows: List[Tuple[str, Optional[str], O
     Use COPY for speed. We COPY into columns matching our row layout.
     """
     sio = StringIO()
-    w = csv.writer(sio, delimiter="\t", lineterminator="\n", quoting=csv.QUOTE_MINIMAL, escapechar="\\")
     for (oid, gml_id, feature_type, aktualit_iso, nutzart, geom_wkt) in rows:
-        w.writerow([
+        sio.write(_copy_line([
             oid,
-            gml_id or r"\N",
-            feature_type or r"\N",
-            aktualit_iso or r"\N",
-            nutzart or r"\N",
-            geom_wkt or r"\N",
-        ])
+            gml_id or None,
+            feature_type or None,
+            aktualit_iso or None,
+            nutzart or None,
+            geom_wkt or None,
+        ]))
     sio.seek(0)
 
     with conn.cursor() as cur:
