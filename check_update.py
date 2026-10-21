@@ -18,6 +18,12 @@ beside this script, one file per run, named by --job-id or by the clock. The per
 a check prints -- which package differs, how many megabytes it read -- are the
 record of what the portals actually served that night.
 
+The run ends with a summary, which cron.py parses -- keep its labels stable:
+
+    update needed: bb nw
+    up to date: he hh mv
+    check failed: sh
+
 It only reports; nothing here writes update_state.json. That file sits beside
 this script and holds every state's last seen marker, written by whatever
 actually downloaded the data -- download.py, or automation_base_by/st.py -- so a
@@ -857,6 +863,7 @@ def main(argv):
 
     recorded = load_state()
     run_started = time.monotonic()
+    needed, current, failed = [], [], []
 
     with tee_output(log):
         print('start   %s' % datetime.now().strftime(TIME_FMT))
@@ -872,14 +879,17 @@ def main(argv):
             try:
                 needs, marker, lines = check(abbr, recorded)
                 if needs:
+                    needed.append(abbr)
                     print('%s: update available -- %s' % (abbr, lines[0]))
                     for line in lines[1:]:
                         print(line)
                 else:
+                    current.append(abbr)
                     print('%s: up to date (%s)'
                           % (abbr,
                              '%d file(s)' % len(marker) if isinstance(marker, dict) else marker))
             except Exception as exc:
+                failed.append(abbr)
                 print('%s: CHECK FAILED: %s' % (abbr, exc), file=sys.stderr)
             finally:
                 # In a finally so a failed check still says how long it took -- a
@@ -888,6 +898,13 @@ def main(argv):
 
         print('end     %s' % datetime.now().strftime(TIME_FMT))
         print('elapsed %s' % elapsed(run_started))
+
+        # The run's verdict, last so cron.py can read it off the end of the
+        # output: space-separated abbreviations, '-' for none.
+        print('')
+        print('update needed: %s' % (' '.join(needed) or '-'))
+        print('up to date: %s' % (' '.join(current) or '-'))
+        print('check failed: %s' % (' '.join(failed) or '-'))
 
 
 if __name__ == '__main__':
