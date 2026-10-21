@@ -559,8 +559,12 @@ def run_state(state, job_id, be_update_path=None):
     run([py, SCRIPT_DIR / 'make_nas.py', '--job-id=%s' % job_id, state])
 
     # Before the zip and the database work, so a malformed file stops the run early.
+    started = datetime.now()
     validate_nas_files(state, job_id)
+    print('# TimeLog - %s XML validation elapsed %s' % (state, elapsed(started, datetime.now())))
+    started = datetime.now()
     archive_nas_files(state, job_id)
+    print('# TimeLog - %s Archive NAS files elapsed %s' % (state, elapsed(started, datetime.now())))
 
     # An `update` state writes differentially into the database that is already
     # live, so there is nothing to create, promote or swap -- doing any of those
@@ -577,13 +581,16 @@ def run_state(state, job_id, be_update_path=None):
         # rollback point there is. Taken before the importer touches anything, and
         # filed under the same name a create+clean state gives the database it
         # retires, because that is what it is.
+        started = datetime.now()
         dump_database(state, job_id, live, filename=old_db(state, job_id))
         # And a live copy to roll back to without a restore. Aborts the run if the
         # live database never goes idle -- safe, since the importer has not started.
         clone_live_database(state, job_id)
+        print('# TimeLog - %s Dump live db for alkis-update elapsed %s' % (state, elapsed(started, datetime.now())))
     else:
         create_database(state, job_id)
 
+    started = datetime.now()
     # cwd matters: alkis-import.sh resolves its own helpers relative to itself.
     started = datetime.now()
     run(['bash', ALKIS_IMPORT, lst_path(state, job_id)], cwd=str(ALKIS_IMPORT.parent))
@@ -615,6 +622,7 @@ def run_state(state, job_id, be_update_path=None):
             print('first job for %s: nothing retired, so nothing to dump' % state)
 
     prune_prev_databases(state)
+    print('# TimeLog - %s Dump for backup elapsed %s' % (state, elapsed(started, datetime.now())))
 
 
 def build_parser():
