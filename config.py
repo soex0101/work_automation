@@ -46,6 +46,9 @@ SWAP_RETRY_COUNT = _parser.getint('swap', 'retry_count', fallback=20)
 # Retired <state>_alkis_<job>_prev databases kept as rollback targets.
 KEEP_PREV_DB = _parser.getint('cleanup', 'keep_prev_db', fallback=1)
 
+# Most imports cron.py lets run at once, counting ones an earlier tick started.
+CONCURRENT_JOB_COUNT = _parser.getint('cron', 'concurrent_job_count', fallback=3)
+
 
 
 # ---- automation_base_by.py / automation_base_st.py ----
