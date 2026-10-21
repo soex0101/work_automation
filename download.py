@@ -188,7 +188,13 @@ def download(url, dest, verify=True, proxies=None, headers=None, stalls=100):
                         if chunk:
                             f.write(chunk)
                             have += len(chunk)
-        except requests.RequestException:
+        except requests.RequestException as exc:
+            # A 4xx is the server's answer, not a stall: retrying it here only
+            # waits out `stalls` x RETRY_DELAY (~50 min) before the same error.
+            # 408 and 429 are the exceptions -- those do mean "try again later".
+            status = getattr(getattr(exc, 'response', None), 'status_code', None)
+            if status is not None and 400 <= status < 500 and status not in (408, 429):
+                raise
             have = tmp.stat().st_size if tmp.exists() else 0
             if total is not None and have >= total:
                 # The cut came after the last byte: the file is whole, so there is
@@ -388,7 +394,8 @@ def process_urls(urls, handler, attempts=5, delay=RETRY_DELAY):
     blip. It is the same `delay` before every attempt, not a growing backoff, so
     the wait stays predictable: five attempts span two minutes. Attempts are
     bounded; a permanent 404 costs `attempts` tries and is reported, never
-    retried forever.
+    retried forever. If any url is given up on, RuntimeError is raised once
+    the rest have been tried.
     """
     failed = []
 
@@ -405,10 +412,15 @@ def process_urls(urls, handler, attempts=5, delay=RETRY_DELAY):
                 print('  retrying in %ds' % delay)
                 time.sleep(delay)
 
+    # Raised, not returned: a state missing a package must not reach the importer,
+    # which would make the partial set live. Every url is still tried first, so
+    # the log names all the failures at once.
     if failed:
         print('%d url(s) gave up after %d attempts:' % (len(failed), attempts))
         for url in failed:
             print('  %s' % url)
+        raise RuntimeError('%d of %d url(s) failed to download'
+                           % (len(failed), len(urls)))
     return failed
 
 
