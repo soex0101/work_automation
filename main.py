@@ -18,6 +18,7 @@ Mints a job id from the current time, then:
     swap into <state>_alkis                once nothing is connected to it
     pg_dump -Fc the retired database       -> backup/<state>/<id>/<state>_old_<id>.dump
     drop surplus <state>_old_<id> databases
+    record the run in update_history      only once every stage above succeeded
 
 Every stage is a subprocess; a non-zero exit aborts the run, so a failed download
 never reaches the importer. Paths come from config.ini.
@@ -64,12 +65,15 @@ from xml.parsers import expat
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import psycopg2
+
 from config import (INVENTORY_DIR, STAGING_DIR, BACKUP_DIR, ALKIS_IMPORT,
                     DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_MAINTENANCE,
                     SWAP_RETRY_SECONDS, SWAP_RETRY_COUNT, KEEP_PREV_DB)
 import download
 import logtee
 import make_nas
+import state_db
 from logtee import tee_output
 from make_nas import db_name, live_db, old_db
 
@@ -90,6 +94,20 @@ PREV_MARKER = 'alkis-retired-job:'
 def elapsed(start, end):
     """Whole-second wall clock between two datetimes, as H:MM:SS."""
     return timedelta(seconds=round((end - start).total_seconds()))
+
+
+def record_history(state, job_id, started, finished):
+    """Store one successful update in the update_history table (state_db.py).
+
+    A failure here is a warning: the update itself is done, and the history is
+    bookkeeping.
+    """
+    try:
+        state_db.record_update(state, job_id, started, finished)
+    except psycopg2.Error as exc:
+        print('WARNING: update history not recorded: %s' % exc)
+        return
+    print('recorded update %s in %s.update_history' % (job_id, state_db.STATE_DB))
 
 
 def run(command, cwd=None, env=None):
@@ -690,6 +708,8 @@ def main(argv):
         print('#' * 60)
         try:
             run_state(state, job_id, args.be_update_path)
+            # Reached only if every stage succeeded: run_state raises on any failure.
+            record_history(state, job_id, started, datetime.now())
         finally:
             finished = datetime.now()
             print('# %s end     %s' % (state, finished.strftime(TIME_FMT)))

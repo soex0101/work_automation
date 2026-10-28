@@ -3,8 +3,9 @@
 
 Each state has a `<state>_marker()` that asks its portal one cheap question --
 a publication date, a per-file timestamp, a hash -- and returns the answer as a
-string, or as a dict of one per file. The marker is compared with the one stored
-for that state in update_state.json; if they differ, the state needs an update.
+string, or as a dict of one per file. The marker is compared with the state's
+newest one in the alkis_scraper database's update_state table (state_db.py); if
+they differ, the state needs an update.
 What a marker means is per state and is never interpreted here, only compared,
 so anything stable, comparable and JSON-serialisable works.
 
@@ -24,19 +25,18 @@ The run ends with a summary, which cron.py parses -- keep its labels stable:
     up to date: he hh mv
     check failed: sh
 
-It only reports; nothing here writes update_state.json. That file sits beside
-this script and holds every state's last seen marker, written by whatever
-actually downloaded the data -- download.py, or automation_base_by/st.py -- so a
-state keeps reporting an update until the data has really been fetched. It
-starts out empty: with no entry for a state, that state needs an update and the
-check is skipped rather than run for a foregone answer.
+It only reports; nothing here writes update_state. That table holds one marker
+per state and job, written by whatever actually downloaded the data --
+download.py, or automation_base_by/st.py -- so a state keeps reporting an update
+until the data has really been fetched. With no row for a state, that state
+needs an update and the check is skipped rather than run for a foregone answer.
+If the database cannot be read the run fails before checking anything, and
+prints no summary, so cron.py starts nothing.
 """
 
 import argparse
-import fcntl
 import time
 import hashlib
-import json
 import re
 import sys
 from datetime import datetime, timezone
@@ -49,13 +49,10 @@ from bs4 import BeautifulSoup
 
 import config     # for the Bayern / Sachsen-Anhalt source urls
 import download   # for the list of known state abbreviations, and its portal URLs
+import state_db
 from logtee import tee_output
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-STATE_FILE = SCRIPT_DIR / 'update_state.json'
-# Held while read-modify-writing the file above. A separate file so the lock is
-# not tied to an inode that save_state() is about to replace.
-LOCK_FILE = SCRIPT_DIR / 'update_state.lock'
 
 TIME_FMT = '%Y-%m-%d %H:%M:%S'
 JOB_FMT = '%Y%m%d_%H%M%S'
@@ -74,47 +71,6 @@ class Changed(Exception):
     so the remaining files are never fetched. The marker is then incomplete by
     design, which is why nothing is recorded for a state that raises it.
     """
-
-
-def load_state():
-    """Every state's last seen marker, as {state: {'marker': str, 'checked': str}}.
-
-    A missing or empty file means nothing has ever been recorded, so every
-    state reports an update.
-    """
-    if not STATE_FILE.is_file() or not STATE_FILE.read_text().strip():
-        return {}
-    return json.loads(STATE_FILE.read_text())
-
-
-def save_state(state):
-    """Write the whole file, via a temporary renamed into place.
-
-    The rename is atomic, so an interrupted write leaves the previous file
-    intact rather than a truncated one. Callers go through record_state().
-    """
-    tmp = STATE_FILE.with_suffix('.json.part')
-    tmp.write_text(json.dumps(state, indent=2, sort_keys=True) + '\n')
-    tmp.replace(STATE_FILE)
-
-
-def record_state(state, marker, **extra):
-    """Merge one state's entry in, leaving every other state untouched.
-
-    The file is re-read inside the lock, immediately before writing, so the
-    entry cannot be built from a stale copy: two runs recording different states
-    at the same time both survive, whichever finishes first. The lock is a
-    separate file, so it still holds across the atomic rename in save_state().
-
-    A file that will not parse is left exactly as it is -- better a stale marker
-    than a lost one, and the caller reports the error.
-    """
-    with open(LOCK_FILE, 'w') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        current = load_state()
-        current[state] = dict(extra, marker=marker)
-        save_state(current)
-    return current
 
 
 # ============================================================================
@@ -861,7 +817,7 @@ def main(argv):
     print('job     %s' % job_id)
     print('log     %s' % log)
 
-    recorded = load_state()
+    recorded = state_db.latest_markers()
     run_started = time.monotonic()
     needed, current, failed = [], [], []
 

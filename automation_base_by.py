@@ -170,6 +170,7 @@ from psycopg2 import sql, errors
 
 import check_update
 import config
+import state_db
 
 
 # ============================================================================
@@ -2109,20 +2110,15 @@ def _timed(label: str):
 
 
 def record_marker(job_id: str) -> None:
-    """Record what this run downloaded in update_state.json.
+    """Record what this run downloaded in the update_state table (state_db.py).
 
     Hashed off the files in DOWNLOAD_DIR, so it costs no bandwidth -- which is
-    also why it has to happen before promote() empties that directory. Only this
-    state's entry is touched; every other state's marker is left as it is.
+    also why it has to happen before promote() empties that directory. One row
+    for this state and job; every other state's marker is left as it is.
     """
     marker = check_update.RECORDERS[STATE](DOWNLOAD_DIR)
-    check_update.record_state(
-        STATE,
-        marker,
-        checked=time.strftime(check_update.TIME_FMT),
-        job=job_id,
-    )
-    print(f"      recorded {len(marker)} file(s) in {check_update.STATE_FILE}")
+    state_db.record_marker(STATE, job_id, marker)
+    print(f"      recorded {len(marker)} file(s) in {state_db.STATE_DB}.update_state")
 
 
 def download_only(job_id: str) -> None:
@@ -2172,7 +2168,7 @@ def main() -> None:
         action="store_true",
         help=(
             "Only download the sources and record the update marker in "
-            "update_state.json: no unzip, no import, no promotion or renaming"
+            "the update_state table: no unzip, no import, no promotion or renaming"
         ),
     )
     args = ap.parse_args()

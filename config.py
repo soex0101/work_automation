@@ -39,6 +39,8 @@ DB_USER = os.environ.get('ALKIS_DB_USER') or _parser.get('database', 'user').str
 DB_PASSWORD = (os.environ.get('ALKIS_DB_PASSWORD')
                or _parser.get('database', 'password').strip())
 DB_MAINTENANCE = _parser.get('database', 'maintenance_db', fallback='postgres').strip()
+# Holds update_state and update_history (state_db.py), on the same server.
+STATE_DB = _parser.get('database', 'state_db', fallback='alkis_scraper').strip()
 
 SWAP_RETRY_SECONDS = _parser.getint('swap', 'retry_seconds', fallback=30)
 SWAP_RETRY_COUNT = _parser.getint('swap', 'retry_count', fallback=20)

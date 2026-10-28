@@ -48,6 +48,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # Paths come from config.ini. INVENTORY_DIR holds the unpacked data; STAGING_DIR
 # holds in-flight archives and is kept outside it so that partial and leftover
 # files can never be picked up by the .lst directory walk.
+import state_db
 from config import INVENTORY_DIR, STAGING_DIR, BACKUP_DIR
 from logtee import tee_unless_parent
 
@@ -1065,11 +1066,9 @@ def record_update_marker(state):
         print('WARNING: update marker not recorded: %s' % exc)
         return
 
-    # Merges this state's entry only; every other state's marker is left as it is.
-    check_update.record_state(state, marker,
-                              checked=datetime.now().strftime(TIME_FMT),
-                              job=JOB_ID)
-    print('recorded %d file(s) in %s' % (len(marker), check_update.STATE_FILE))
+    # One row for this state and job; every other state's marker is left as it is.
+    state_db.record_marker(state, JOB_ID, marker)
+    print('recorded %d file(s) in %s.update_state' % (len(marker), state_db.STATE_DB))
 
 
 def main(argv):
