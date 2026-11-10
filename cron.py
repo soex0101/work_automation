@@ -43,6 +43,9 @@ PY = sys.executable or 'python3'
 JOB_FMT = '%Y%m%d_%H%M%S'
 TIME_FMT = '%Y-%m-%d %H:%M:%S'
 
+# Started only with the slots left once every other due state has one.
+LOW_PRIORITY = ('st', 'rp')
+
 
 def checkable_states():
     """The abbreviations that have a check.
@@ -181,6 +184,8 @@ def main():
             busy.append(state)
         else:
             due.append(state)
+    # Low-priority states last, so the slots below go to the others first.
+    due.sort(key=lambda s: s in LOW_PRIORITY)
 
     print('')
     print('due     %s' % (' '.join(due) or '-'))
