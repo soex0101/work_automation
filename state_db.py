@@ -8,6 +8,8 @@ use if they do not exist yet:
     update_history  one row per main.py run: state, job, started, finished,
                     elapsed, status (PROCESSING / COMPLETE / FAILED),
                     error_message
+    update_check    one row per state per check_update.py run: CHECKING, then
+                    UPDATE_NEEDED / UP_TO_DATE / FAILED with the check's detail
 
 check_update.py compares each portal against the state's newest marker; the
 history is for analysing how often each state's database is updated (the
@@ -30,7 +32,7 @@ from config import DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, STATE_DB
 CONNECT_TIMEOUT = 30
 
 SCHEMA_SQL = Path(__file__).resolve().parent / 'sql' / 'state_tables.sql'
-OBJECTS = ('update_state', 'update_history', 'update_frequency')   # in public
+OBJECTS = ('update_state', 'update_history', 'update_frequency', 'update_check')   # in public
 
 _tables_ready = False   # checked once per process
 
@@ -191,3 +193,19 @@ def record_update(state, job, started, status, finished=None, error_message=None
             'status = EXCLUDED.status, error_message = EXCLUDED.error_message',
             (state, job, started.astimezone(),
              finished.astimezone() if finished else None, status, error_message))
+
+
+def start_check(state, job):
+    """Mark state's check in run job as CHECKING. Recording the same job again restarts it."""
+    execute("INSERT INTO public.update_check (state, job) VALUES (%s, %s) "
+            "ON CONFLICT (state, job) DO UPDATE SET started = now(), finished = NULL, "
+            "result = 'CHECKING', detail = NULL",
+            (state, job))
+
+
+def finish_check(state, job, result, detail):
+    """Store the verdict of state's check in run job: UPDATE_NEEDED, UP_TO_DATE or FAILED."""
+    execute('INSERT INTO public.update_check (state, job, finished, result, detail) '
+            'VALUES (%s, %s, now(), %s, %s) ON CONFLICT (state, job) DO UPDATE '
+            'SET finished = now(), result = EXCLUDED.result, detail = EXCLUDED.detail',
+            (state, job, result, detail))

@@ -780,6 +780,19 @@ def state_arg(known):
     return check
 
 
+def record(write, state, *args):
+    """Write one update_check row, without letting a failure stop the run.
+
+    update_check is for the admin panel; the summary below is what cron.py acts
+    on, so a database hiccup here must not change it.
+    """
+    try:
+        write(state, *args)
+    except Exception as exc:
+        print('warning: update_check not written for %s: %s' % (state, exc),
+              file=sys.stderr)
+
+
 def elapsed(started):
     """Wall clock since a time.monotonic() reading, as H:MM:SS."""
     secs = round(time.monotonic() - started)
@@ -832,6 +845,7 @@ def main(argv):
                 print('%s: no check implemented' % abbr, file=sys.stderr)
                 continue
 
+            record(state_db.start_check, abbr, job_id)
             try:
                 needs, marker, lines = check(abbr, recorded)
                 if needs:
@@ -839,14 +853,18 @@ def main(argv):
                     print('%s: update available -- %s' % (abbr, lines[0]))
                     for line in lines[1:]:
                         print(line)
+                    record(state_db.finish_check, abbr, job_id, 'UPDATE_NEEDED',
+                           '\n'.join(lines))
                 else:
                     current.append(abbr)
-                    print('%s: up to date (%s)'
-                          % (abbr,
-                             '%d file(s)' % len(marker) if isinstance(marker, dict) else marker))
+                    seen = '%d file(s)' % len(marker) if isinstance(marker, dict) else marker
+                    print('%s: up to date (%s)' % (abbr, seen))
+                    record(state_db.finish_check, abbr, job_id, 'UP_TO_DATE',
+                           'up to date (%s)' % seen)
             except Exception as exc:
                 failed.append(abbr)
                 print('%s: CHECK FAILED: %s' % (abbr, exc), file=sys.stderr)
+                record(state_db.finish_check, abbr, job_id, 'FAILED', str(exc))
             finally:
                 # In a finally so a failed check still says how long it took -- a
                 # portal that hangs until the timeout is the usual reason.

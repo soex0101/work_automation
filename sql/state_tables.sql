@@ -52,3 +52,21 @@ FROM (SELECT state, finished,
       FROM public.update_history
       WHERE status = 'COMPLETE') t
 GROUP BY state;
+
+-- One row per state per check_update.py run: CHECKING while the check runs, then
+-- its verdict. Read by the admin panel (alkis-update-manager) to show whether a
+-- state needs an update; written by every check, cron's and the panel's alike.
+-- A row left CHECKING is a check that died before it finished.
+CREATE TABLE IF NOT EXISTS public.update_check (
+    cid      bigint      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    state    text        NOT NULL,
+    job      text        NOT NULL,           -- the check run's --job-id
+    started  timestamptz NOT NULL DEFAULT now(),
+    finished timestamptz,
+    result   text        NOT NULL DEFAULT 'CHECKING'
+             CHECK (result IN ('CHECKING', 'UPDATE_NEEDED', 'UP_TO_DATE', 'FAILED')),
+    detail   text,                           -- the check's lines, or the exception
+    UNIQUE (state, job)
+);
+CREATE INDEX IF NOT EXISTS update_check_state_started
+    ON public.update_check (state, started);
