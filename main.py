@@ -59,6 +59,7 @@ CREATE DATABASE fails if that job's database already exists.
 import argparse
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -96,6 +97,34 @@ PREV_MARKER = 'alkis-retired-job:'
 def elapsed(start, end):
     """Whole-second wall clock between two datetimes, as H:MM:SS."""
     return timedelta(seconds=round((end - start).total_seconds()))
+
+
+class Terminated(BaseException):
+    """Raised by the SIGTERM handler, so a plain kill goes down the same path as
+    any other failure and is recorded FAILED."""
+
+    def __str__(self):
+        return 'main.py received %s' % signal.Signals(self.args[0]).name
+
+
+def on_sigterm(signum, frame):
+    raise Terminated(signum)
+
+
+def start_history(state, job_id, started):
+    """Write this run's PROCESSING row; return the connection holding its run
+    lock (state_db.start_update), or None if the database could not be reached.
+
+    Close the connection only after the closing record_history(): while it is
+    open, cron.py knows this run is alive.
+    """
+    try:
+        conn = state_db.start_update(state, job_id, started)
+    except psycopg2.Error as exc:
+        print('WARNING: update history not recorded (PROCESSING): %s' % exc)
+        return None
+    print('recorded PROCESSING %s in %s.update_history' % (job_id, state_db.STATE_DB))
+    return conn
 
 
 def record_history(state, job_id, started, status, finished=None, error_message=None):
@@ -708,11 +737,12 @@ def main(argv):
         print('# %s' % state)
         print('# start   %s' % started.strftime(TIME_FMT))
         print('#' * 60)
-        record_history(state, job_id, started, 'PROCESSING')
+        signal.signal(signal.SIGTERM, on_sigterm)
+        lock = start_history(state, job_id, started)
         try:
             run_state(state, job_id, args.be_update_path)
         except BaseException as exc:
-            # BaseException so Ctrl+C / SIGINT is recorded too; re-raised as is.
+            # BaseException so Ctrl+C and SIGTERM are recorded too; re-raised as is.
             reason = '%s: %s' % (type(exc).__name__, exc) if str(exc) else type(exc).__name__
             record_history(state, job_id, started, 'FAILED', datetime.now(), reason)
             raise
@@ -720,6 +750,8 @@ def main(argv):
             # Reached only if every stage succeeded: run_state raises on any failure.
             record_history(state, job_id, started, 'COMPLETE', datetime.now())
         finally:
+            if lock:
+                lock.close()   # releases the run lock, now the result is written
             finished = datetime.now()
             print('# %s end     %s' % (state, finished.strftime(TIME_FMT)))
             print('# TimeLog - %s Total elapsed %s' % (state, elapsed(started, finished)))

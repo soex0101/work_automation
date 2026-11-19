@@ -18,7 +18,10 @@ CREATE TABLE IF NOT EXISTS public.update_state (
 -- COMPLETE once every stage has succeeded, or FAILED with the reason in
 -- error_message. finished (and so elapsed) stays NULL while PROCESSING; a run
 -- killed outright (SIGKILL, reboot) is left PROCESSING.
+-- pid numbers the runs in the order they started; (state, job) stays unique,
+-- since that is what state_db.py's upsert matches on.
 CREATE TABLE IF NOT EXISTS public.update_history (
+    pid            bigint      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     state          text        NOT NULL,
     job            text        NOT NULL,
     started        timestamptz NOT NULL,
@@ -27,7 +30,7 @@ CREATE TABLE IF NOT EXISTS public.update_history (
     status         text        NOT NULL DEFAULT 'PROCESSING'
                    CHECK (status IN ('PROCESSING', 'COMPLETE', 'FAILED')),
     error_message  text,
-    PRIMARY KEY (state, job)
+    UNIQUE (state, job)
 );
 CREATE INDEX IF NOT EXISTS update_history_state_finished
     ON public.update_history (state, finished);

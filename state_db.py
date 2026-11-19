@@ -34,6 +34,11 @@ OBJECTS = ('update_state', 'update_history', 'update_frequency')   # in public
 
 _tables_ready = False   # checked once per process
 
+# Advisory lock namespace: main.py holds (RUN_LOCK, update_history.pid) for as
+# long as its run lives. Postgres frees it however the process ends, SIGKILL and
+# reboots included, so a PROCESSING row whose lock is free has no run behind it.
+RUN_LOCK = 'alkis-automation run'
+
 
 def connect():
     return psycopg2.connect(dbname=STATE_DB, user=DB_USER, password=DB_PASSWORD,
@@ -94,6 +99,73 @@ def latest_markers():
                    'FROM public.update_state ORDER BY state, recorded DESC')
     return {state: {'marker': marker, 'job': job, 'recorded': recorded}
             for state, job, marker, recorded in rows}
+
+
+def start_update(state, job, started):
+    """Write the job's PROCESSING row and take its run lock; return the
+    connection holding the lock.
+
+    The caller keeps it open until the run's closing record_update() is
+    written, then closes it. Row and lock commit together, so the row is never
+    seen without its lock.
+    """
+    global _tables_ready
+    conn = connect()
+    try:
+        with conn, conn.cursor() as cur:
+            if not _tables_ready:
+                ensure_tables(cur)
+            cur.execute('INSERT INTO public.update_history (state, job, started, status) '
+                        "VALUES (%s, %s, %s, 'PROCESSING') ON CONFLICT (state, job) DO UPDATE "
+                        "SET started = EXCLUDED.started, finished = NULL, "
+                        "status = 'PROCESSING', error_message = NULL RETURNING pid",
+                        (state, job, started.astimezone()))
+            pid = cur.fetchone()[0]
+            # Session-level, so it outlives this transaction. Taken only if free:
+            # held means another live main.py is running this very state and job.
+            cur.execute('SELECT pg_try_advisory_lock(hashtext(%s), %s)', (RUN_LOCK, pid))
+            if not cur.fetchone()[0]:
+                raise RuntimeError('%s job %s is already running in another main.py'
+                                   % (state, job))
+        _tables_ready = True
+        return conn
+    except BaseException:
+        conn.close()
+        raise
+
+
+def fail_dead_jobs():
+    """Set FAILED every PROCESSING row whose main.py is gone; return
+    [(state, job, error_message)] for each.
+
+    Gone means its run lock is free: the process ended without writing its
+    result -- SIGKILL, a crash, or the server going down. finished is left
+    NULL, since when it died is not known.
+    """
+    return execute(
+        # MATERIALIZED, so the lock is only tried for PROCESSING rows.
+        "WITH processing AS MATERIALIZED ("
+        "    SELECT pid FROM public.update_history WHERE status = 'PROCESSING') "
+        "UPDATE public.update_history h SET status = 'FAILED', error_message = "
+        "    CASE WHEN pg_postmaster_start_time() > h.started "
+        "    THEN 'main.py lost: the database server restarted at ' "
+        "         || to_char(pg_postmaster_start_time(), 'YYYY-MM-DD HH24:MI:SS') "
+        "         || ' while the job ran (server reboot?)' "
+        "    ELSE 'main.py ended without recording a result (killed with SIGKILL or crashed)' "
+        "    END || '; found by cron.py at ' || to_char(now(), 'YYYY-MM-DD HH24:MI:SS') "
+        "FROM processing p "
+        "WHERE h.pid = p.pid AND pg_try_advisory_xact_lock(hashtext(%s), p.pid::int) "
+        "RETURNING h.state, h.job, h.error_message",
+        (RUN_LOCK,))
+
+
+def running_jobs():
+    """{state: {'job', 'started'}} for every state with an update_history row
+    still PROCESSING; the newest, if a state has more than one.
+    """
+    rows = execute("SELECT state, job, started FROM public.update_history "
+                   "WHERE status = 'PROCESSING' ORDER BY started")
+    return {state: {'job': job, 'started': started} for state, job, started in rows}
 
 
 def record_marker(state, job, marker):

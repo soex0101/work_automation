@@ -27,15 +27,14 @@ Berlin is never started: it has no check and needs --be-update-path, which only 
 human can supply.
 """
 
-import os
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
 
 import check_update   # for the list of states that have a check
+import state_db
 from config import CONCURRENT_JOB_COUNT
-from main import ALL_STATES   # every abbreviation main.py accepts
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 MAIN_PY = SCRIPT_DIR / 'main.py'
@@ -91,50 +90,6 @@ def run_checks(states, job_id):
     return verdicts, (proc.stdout + proc.stderr).rstrip()
 
 
-def is_our_main(pid, args):
-    """True if args are a python running this project's main.py.
-
-    Matched on the resolved path, not the name: other projects on the machine run
-    a main.py of their own. A relative path is resolved against the process's
-    cwd; one whose cwd cannot be read (another user's) is not ours to count.
-    """
-    if not args or not Path(args[0]).name.startswith('python'):
-        return False
-    for arg in args[1:]:
-        if Path(arg).name == 'main.py':
-            path = Path(arg)
-            if not path.is_absolute():
-                try:
-                    path = Path(os.readlink('/proc/%d/cwd' % pid)) / path
-                except OSError:
-                    return False
-            return path.resolve() == MAIN_PY
-    return False
-
-
-def still_running():
-    """{state: pid} for every run of this project's main.py going now.
-
-    Found by scanning /proc, whatever stage the run is at -- downloading,
-    validating, zipping, importing -- and by / st too. Only this main.py counts:
-    an alkis-import.sh started some other way, or another project's main.py,
-    takes no slot.
-    """
-    mains = {}
-    for proc in Path('/proc').iterdir():
-        if not proc.name.isdigit():
-            continue
-        try:
-            args = (proc / 'cmdline').read_bytes().decode('utf-8', 'replace').split('\0')
-        except OSError:
-            continue                      # exited mid-scan
-        if is_our_main(int(proc.name), args):
-            state = next((a for a in args if a in ALL_STATES), None)
-            if state:
-                mains.setdefault(state, int(proc.name))
-    return mains
-
-
 def launch(state, job_id):
     """Start main.py for one state and return its pid.
 
@@ -165,7 +120,14 @@ def main():
     print('cron    %s' % started.strftime(TIME_FMT))
     print('job     %s' % job_id)
 
-    mains = still_running()
+    # A main.py that died without writing its result (SIGKILL, crash, reboot)
+    # would otherwise stay PROCESSING and hold its slot forever.
+    for state, job, reason in state_db.fail_dead_jobs():
+        print('failed  %-3s job %s marked FAILED: %s' % (state, job, reason))
+
+    # Every main.py run is PROCESSING in update_history from its start until it
+    # ends, whatever stage it is at -- and by / st too.
+    mains = state_db.running_jobs()
     states = checkable_states()
 
     verdicts, output = run_checks(states, job_id)
@@ -196,8 +158,9 @@ def main():
         print('busy    %s  (main.py already running; not started again)' % ' '.join(busy))
     running = len(mains)
     print('running %d job(s)' % running)
-    for state, pid in sorted(mains.items()):
-        print('        %-3s main.py pid %d' % (state, pid))
+    for state, run in sorted(mains.items()):
+        print('        %-3s job %s, started %s'
+              % (state, run['job'], run['started'].strftime(TIME_FMT)))
 
     # Jobs already running -- an earlier tick's or started by hand, at any stage
     # -- take their slots first. A state left over is not marked anywhere: its
