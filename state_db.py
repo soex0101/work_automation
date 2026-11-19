@@ -5,8 +5,9 @@ Two tables in its public schema, created from sql/state_tables.sql on first
 use if they do not exist yet:
 
     update_state    one marker per state and job, as that job's download saw it
-    update_history  one row per successful database update: state, job,
-                    started, finished, elapsed
+    update_history  one row per main.py run: state, job, started, finished,
+                    elapsed, status (PROCESSING / COMPLETE / FAILED),
+                    error_message
 
 check_update.py compares each portal against the state's newest marker; the
 history is for analysing how often each state's database is updated (the
@@ -103,11 +104,18 @@ def record_marker(state, job, marker):
             (state, job, Json(marker)))
 
 
-def record_update(state, job, started, finished):
-    """Store one successful database update. started / finished are local times."""
+def record_update(state, job, started, status, finished=None, error_message=None):
+    """Write the job's update_history row: PROCESSING at the start, then
+    COMPLETE or FAILED. started / finished are local times.
+
+    An upsert, so the closing write still lands if the opening one was lost.
+    """
     # astimezone() makes naive local times explicit, so the server's TimeZone
     # setting cannot shift them.
-    execute('INSERT INTO public.update_history (state, job, started, finished) '
-            'VALUES (%s, %s, %s, %s) ON CONFLICT (state, job) DO UPDATE '
-            'SET started = EXCLUDED.started, finished = EXCLUDED.finished',
-            (state, job, started.astimezone(), finished.astimezone()))
+    execute('INSERT INTO public.update_history '
+            '(state, job, started, finished, status, error_message) '
+            'VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (state, job) DO UPDATE '
+            'SET started = EXCLUDED.started, finished = EXCLUDED.finished, '
+            'status = EXCLUDED.status, error_message = EXCLUDED.error_message',
+            (state, job, started.astimezone(),
+             finished.astimezone() if finished else None, status, error_message))

@@ -18,7 +18,9 @@ Mints a job id from the current time, then:
     swap into <state>_alkis                once nothing is connected to it
     pg_dump -Fc the retired database       -> backup/<state>/<id>/<state>_old_<id>.dump
     drop surplus <state>_old_<id> databases
-    record the run in update_history      only once every stage above succeeded
+    update_history row                     PROCESSING at the start, then COMPLETE
+                                           once every stage above succeeded, or
+                                           FAILED with the error
 
 Every stage is a subprocess; a non-zero exit aborts the run, so a failed download
 never reaches the importer. Paths come from config.ini.
@@ -96,18 +98,18 @@ def elapsed(start, end):
     return timedelta(seconds=round((end - start).total_seconds()))
 
 
-def record_history(state, job_id, started, finished):
-    """Store one successful update in the update_history table (state_db.py).
+def record_history(state, job_id, started, status, finished=None, error_message=None):
+    """Write this run's row in the update_history table (state_db.py).
 
-    A failure here is a warning: the update itself is done, and the history is
-    bookkeeping.
+    A failure here is a warning: the history is bookkeeping, and must neither
+    stop an update nor hide the error that failed one.
     """
     try:
-        state_db.record_update(state, job_id, started, finished)
+        state_db.record_update(state, job_id, started, status, finished, error_message)
     except psycopg2.Error as exc:
-        print('WARNING: update history not recorded: %s' % exc)
+        print('WARNING: update history not recorded (%s): %s' % (status, exc))
         return
-    print('recorded update %s in %s.update_history' % (job_id, state_db.STATE_DB))
+    print('recorded %s %s in %s.update_history' % (status, job_id, state_db.STATE_DB))
 
 
 def run(command, cwd=None, env=None):
@@ -706,10 +708,17 @@ def main(argv):
         print('# %s' % state)
         print('# start   %s' % started.strftime(TIME_FMT))
         print('#' * 60)
+        record_history(state, job_id, started, 'PROCESSING')
         try:
             run_state(state, job_id, args.be_update_path)
+        except BaseException as exc:
+            # BaseException so Ctrl+C / SIGINT is recorded too; re-raised as is.
+            reason = '%s: %s' % (type(exc).__name__, exc) if str(exc) else type(exc).__name__
+            record_history(state, job_id, started, 'FAILED', datetime.now(), reason)
+            raise
+        else:
             # Reached only if every stage succeeded: run_state raises on any failure.
-            record_history(state, job_id, started, datetime.now())
+            record_history(state, job_id, started, 'COMPLETE', datetime.now())
         finally:
             finished = datetime.now()
             print('# %s end     %s' % (state, finished.strftime(TIME_FMT)))

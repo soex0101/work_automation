@@ -1,6 +1,6 @@
 -- Update markers and update history, in the alkis_scraper database.
--- Run once:  psql -d alkis_scraper -f sql/state_tables.sql
--- (migrate_state_json.py runs it too.) Safe to run again.
+-- state_db.py runs this on first use if any of the objects below is missing, so
+-- nothing has to be set up by hand. Safe to run again.
 
 -- One marker per state and job: what that job's download saw on the portal.
 -- check_update.py compares a portal against each state's newest row. Written
@@ -14,20 +14,25 @@ CREATE TABLE IF NOT EXISTS public.update_state (
     PRIMARY KEY (state, job)
 );
 
--- One row per successful database update, written by main.py once every stage
--- of the run has succeeded.
+-- One row per main.py run, written as PROCESSING when it starts and set to
+-- COMPLETE once every stage has succeeded, or FAILED with the reason in
+-- error_message. finished (and so elapsed) stays NULL while PROCESSING; a run
+-- killed outright (SIGKILL, reboot) is left PROCESSING.
 CREATE TABLE IF NOT EXISTS public.update_history (
-    state     text        NOT NULL,
-    job       text        NOT NULL,
-    started   timestamptz NOT NULL,
-    finished  timestamptz NOT NULL,
-    elapsed   interval    GENERATED ALWAYS AS (finished - started) STORED,
+    state          text        NOT NULL,
+    job            text        NOT NULL,
+    started        timestamptz NOT NULL,
+    finished       timestamptz,
+    elapsed        interval    GENERATED ALWAYS AS (finished - started) STORED,
+    status         text        NOT NULL DEFAULT 'PROCESSING'
+                   CHECK (status IN ('PROCESSING', 'COMPLETE', 'FAILED')),
+    error_message  text,
     PRIMARY KEY (state, job)
 );
 CREATE INDEX IF NOT EXISTS update_history_state_finished
     ON public.update_history (state, finished);
 
--- How often each state's database is updated, in days between updates.
+-- How often each state's database is updated, in days between completed updates.
 CREATE OR REPLACE VIEW public.update_frequency AS
 SELECT state,
        count(*)                                         AS updates,
@@ -41,5 +46,6 @@ SELECT state,
 FROM (SELECT state, finished,
              finished::date - lag(finished::date)
                  OVER (PARTITION BY state ORDER BY finished) AS gap
-      FROM public.update_history) t
+      FROM public.update_history
+      WHERE status = 'COMPLETE') t
 GROUP BY state;
