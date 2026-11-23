@@ -10,7 +10,7 @@ Mints a job id from the current time, then:
     make_nas.py --job-id=<id> <state>      write the .lst
     check every listed file is well-formed XML
     zip the files the .lst references      -> backup/<state>/<id>/nas.zip
-    CREATE DATABASE / CREATE EXTENSION     fresh db with postgis
+    CREATE DATABASE ... TEMPLATE alkis_template / CREATE EXTENSION   fresh db with postgis
     bash <alkis_import> <lst>              run the import
     delete every older job's data and staging folders
     ALTER DATABASE ... RENAME TO ...       drop the _importing suffix
@@ -88,6 +88,10 @@ TIME_FMT = '%Y-%m-%d %H:%M:%S'
 # stat time and databases by birth time -- so this may be changed to a hash or any
 # other scheme without touching the rest of the code.
 JOB_FMT = '%Y%m%d_%H%M%S'
+
+# Every new job database is created from this template. CREATE DATABASE ...
+# TEMPLATE requires zero sessions on the template, so it is waited on first.
+TEMPLATE_DB = 'alkis_template'
 
 # Written as a comment on every retired database, so cleanup can recognise its own
 # work regardless of what the job id looks like.
@@ -376,7 +380,10 @@ def create_database(state, job_id):
     database means something is wrong and should stop the run.
     """
     name = db_name(state, job_id, importing=True)
-    psql('CREATE DATABASE "%s";' % name, DB_MAINTENANCE)
+    if not wait_until_idle(TEMPLATE_DB):
+        raise RuntimeError('%s never went idle; cannot create %s from it'
+                           % (TEMPLATE_DB, name))
+    psql('CREATE DATABASE "%s" TEMPLATE "%s";' % (name, TEMPLATE_DB), DB_MAINTENANCE)
     psql('CREATE EXTENSION IF NOT EXISTS postgis;', name)
     print('database %s created with postgis' % name)
 

@@ -646,7 +646,7 @@ def run_building_job(args, dbname: str) -> None:
     _step(f"[1/6] Ensure database exists: {dbname}")
     # CREATE DATABASE ... TEMPLATE needs the TEMPLATE free of sessions.
     wait_for_no_connections(TEMPLATE_DB)
-    _bld_ensure_database(dbname, PG_HOST, PG_PORT, PG_USER, PG_PASSWORD)
+    _bld_ensure_database(dbname, PG_HOST, PG_PORT, PG_USER, PG_PASSWORD, template=TEMPLATE_DB)
 
     with _bld_db(dbname, PG_HOST, PG_PORT, PG_USER, PG_PASSWORD) as conn:
         _bld_require_postgis(conn)
