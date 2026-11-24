@@ -1731,6 +1731,7 @@ def classify_connections(dbname: str) -> tuple:
                        ({_TERMINATE_PREDICATE}) AS should_terminate
                 FROM pg_stat_activity
                 WHERE datname = %s
+                  AND state IS DISTINCT FROM 'idle' 
                   AND pid <> pg_backend_pid();
                 """,
                 (FORCE_TERMINATE_APP_NAMES, FORCE_TERMINATE_EXCLUDE, dbname),

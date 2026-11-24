@@ -487,7 +487,11 @@ def database_exists(name):
 
 def connection_count(name):
     value = psql_value(
-        "SELECT count(*) FROM pg_stat_activity WHERE datname = '%s';" % name)
+        "SELECT count(*) FROM pg_stat_activity "
+        "WHERE datname = '%s' "
+        "AND state IS DISTINCT FROM 'idle' "
+        "AND query NOT LIKE '/*pga4dash*/%%';" % name
+    )
     return int(value or 0)
 
 
