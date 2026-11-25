@@ -33,6 +33,7 @@ suffix marks an import that failed or is still running. It then becomes the live
 Usage:
     python3 main.py nw                     # one state, end to end
     python3 main.py --job-id=J nw          # use J instead of minting one
+    python3 main.py --job-id=J --skip-download nw   # rerun J on its downloaded data
     python3 main.py --be-update-path=d.zip be   # Berlin, from a delivery archive
     python3 main.py by                     # Bayern / Sachsen-Anhalt, via their own scripts
     python3 main.py --list                 # known state abbreviations
@@ -52,8 +53,12 @@ and captures the output into logs.log.
 
 Without --job-id= a fresh id is minted from the clock. Supplying one is for pinning
 the id -- naming a run to match something external, or lining several invocations
-up under one id. It does not resume: the chain always starts at download, and
-CREATE DATABASE fails if that job's database already exists.
+up under one id. It does not resume: the chain starts at download, and CREATE
+DATABASE fails if that job's database already exists.
+
+--skip-download (with --job-id=) reuses what an earlier run of that job id
+downloaded: the download and the XML check are skipped, and the chain starts at
+make_nas.py. Not for by / st, whose scripts do their own download.
 """
 
 import argparse
@@ -596,20 +601,24 @@ def lst_path(state, job_id):
     return BACKUP_DIR / state / job_id / name
 
 
-def run_state(state, job_id, be_update_path=None):
+def run_state(state, job_id, be_update_path=None, skip_download=False):
     py = sys.executable
 
     if state in EXTERNAL:
         run_external(state, job_id)
         return
 
-    if state == 'be':
-        # Stands in for the download stage, which Berlin does not have.
-        stage_be_delivery(job_id, be_update_path)
+    if skip_download:
+        # The job's inventory is already there from an earlier run of this job id.
+        print('--skip-download: using the data already downloaded for job %s' % job_id)
+    else:
+        if state == 'be':
+            # Stands in for the download stage, which Berlin does not have.
+            stage_be_delivery(job_id, be_update_path)
 
-    started = datetime.now()
-    run([py, SCRIPT_DIR / 'download.py', '--job-id=%s' % job_id, state])
-    print('# TimeLog - %s Downloading elapsed %s' % (state, elapsed(started, datetime.now())))
+        started = datetime.now()
+        run([py, SCRIPT_DIR / 'download.py', '--job-id=%s' % job_id, state])
+        print('# TimeLog - %s Downloading elapsed %s' % (state, elapsed(started, datetime.now())))
 
     if state == 'sh':
         # SH ships no street-name catalogue; make_nas.py refuses to emit a .lst
@@ -619,9 +628,12 @@ def run_state(state, job_id, be_update_path=None):
     run([py, SCRIPT_DIR / 'make_nas.py', '--job-id=%s' % job_id, state])
 
     # Before the zip and the database work, so a malformed file stops the run early.
-    started = datetime.now()
-    validate_nas_files(state, job_id)
-    print('# TimeLog - %s XML validation elapsed %s' % (state, elapsed(started, datetime.now())))
+    # Skipped with the download: the files are the ones an earlier run of this job
+    # downloaded, so checking them again is left out.
+    if not skip_download:
+        started = datetime.now()
+        validate_nas_files(state, job_id)
+        print('# TimeLog - %s XML validation elapsed %s' % (state, elapsed(started, datetime.now())))
     started = datetime.now()
     archive_nas_files(state, job_id)
     print('# TimeLog - %s Archive NAS files elapsed %s' % (state, elapsed(started, datetime.now())))
@@ -698,6 +710,10 @@ def build_parser():
     parser.add_argument('--be-update-path', metavar='ARCHIVE', type=Path,
                         help='Berlin delivery archive (.zip, .7z, .tar.gz or .gz); '
                              'required for be, rejected for any other state')
+    parser.add_argument('--skip-download', action='store_true',
+                        help='reuse the data an earlier run of --job-id downloaded: '
+                             'skip the download and the XML check (needs --job-id; '
+                             'not for by / st)')
     parser.add_argument('--list', action='store_true',
                         help='print the known state abbreviations and exit')
     return parser
@@ -721,9 +737,17 @@ def main(argv):
     # --be-update-path replaces Berlin's download stage, so it is required for be
     # and meaningless anywhere else. Checked here rather than mid-run, where it
     # would surface only once the download had already run.
+    if args.skip_download:
+        # Without a job id there is no earlier download to reuse.
+        if not args.job_id:
+            parser.error('--skip-download needs --job-id=<id> of the run that downloaded')
+        if state in EXTERNAL:
+            parser.error('--skip-download does not apply to %s: its own script '
+                         'does the download' % state)
     if args.be_update_path and state != 'be':
         parser.error('--be-update-path applies only to be')
-    if state == 'be' and not args.be_update_path:
+    # With --skip-download the delivery was already unpacked by the earlier run.
+    if state == 'be' and not args.be_update_path and not args.skip_download:
         parser.error('be needs --be-update-path=<archive>; it has no download stage')
     if args.be_update_path and not args.be_update_path.is_file():
         parser.error('--be-update-path: no such file: %s' % args.be_update_path)
@@ -751,7 +775,7 @@ def main(argv):
         signal.signal(signal.SIGTERM, on_sigterm)
         lock = start_history(state, job_id, started)
         try:
-            run_state(state, job_id, args.be_update_path)
+            run_state(state, job_id, args.be_update_path, args.skip_download)
         except BaseException as exc:
             # BaseException so Ctrl+C and SIGTERM are recorded too; re-raised as is.
             reason = '%s: %s' % (type(exc).__name__, exc) if str(exc) else type(exc).__name__
