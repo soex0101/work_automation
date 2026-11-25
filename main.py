@@ -58,7 +58,9 @@ DATABASE fails if that job's database already exists.
 
 --skip-download (with --job-id=) reuses what an earlier run of that job id
 downloaded: the download and the XML check are skipped, and the chain starts at
-make_nas.py. Not for by / st, whose scripts do their own download.
+make_nas.py. The job's databases the earlier run left (<state>_alkis_<job>,
+with or without _importing) are dropped and created again. Not for by / st,
+whose scripts do their own download.
 """
 
 import argparse
@@ -393,6 +395,29 @@ def create_database(state, job_id):
     print('database %s created with postgis' % name)
 
 
+def drop_job_databases(state, job_id):
+    """For --skip-download: drop the databases an earlier run of this job id left,
+    so create_database() can make them again.
+
+    Only the job's own: <state>_alkis_<job>_importing (import failed) and
+    <state>_alkis_<job> (promoted, swap failed). If old_db() exists the earlier
+    run already swapped, and that database holds the data that was live before
+    it -- not dropped, the run stops instead.
+    """
+    retired = old_db(state, job_id)
+    if database_exists(retired):
+        raise RuntimeError(
+            '%s exists: job %s already swapped into %s, and %s holds what was live '
+            'before it. Not dropping it; rerun under a new job id instead'
+            % (retired, job_id, live_db(state), retired))
+    for name in (db_name(state, job_id, importing=True), db_name(state, job_id)):
+        if database_exists(name):
+            # Fails if anything is still connected, e.g. an alkis-import left
+            # running by the earlier attempt.
+            psql('DROP DATABASE "%s";' % name, DB_MAINTENANCE)
+            print('dropped %s, left by the earlier run of job %s' % (name, job_id))
+
+
 def promote_database(state, job_id):
     """Drop the _importing suffix now that alkis-import has finished cleanly.
 
@@ -649,6 +674,15 @@ def run_state(state, job_id, be_update_path=None, skip_download=False):
             raise RuntimeError(
                 '%s does not exist; %s is a differential update and needs a database '
                 'already built by a full import' % (live, state))
+        clone = old_db(state, job_id)
+        if skip_download and database_exists(clone):
+            # The earlier run cloned live and may have partly updated it since, so
+            # the clone is the only copy from before. Cloning again would replace
+            # it (and its dump) with the partly updated one.
+            raise RuntimeError(
+                '%s exists from the earlier run of job %s: it is %s from before that '
+                'run\'s import, which may have partly updated %s. Restore %s from it '
+                'and drop it, then rerun' % (clone, job_id, live, live, live))
         # An in-place update cannot be undone by renaming, so this dump is the only
         # rollback point there is. Taken before the importer touches anything, and
         # filed under the same name a create+clean state gives the database it
@@ -660,6 +694,8 @@ def run_state(state, job_id, be_update_path=None, skip_download=False):
         clone_live_database(state, job_id)
         print('# TimeLog - %s Dump live db for alkis-update elapsed %s' % (state, elapsed(started, datetime.now())))
     else:
+        if skip_download:
+            drop_job_databases(state, job_id)
         create_database(state, job_id)
 
     started = datetime.now()
