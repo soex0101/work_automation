@@ -57,10 +57,11 @@ up under one id. It does not resume: the chain starts at download, and CREATE
 DATABASE fails if that job's database already exists.
 
 --skip-download (with --job-id=) reuses what an earlier run of that job id
-downloaded: the download and the XML check are skipped, and the chain starts at
-make_nas.py. The job's databases the earlier run left (<state>_alkis_<job>,
-with or without _importing) are dropped and created again. Not for by / st,
-whose scripts do their own download.
+downloaded: the download, the XML check and the nas.zip archive are skipped,
+and the chain runs make_nas.py and then the database stages. The job's
+databases the earlier run left (<state>_alkis_<job>, with or without
+_importing) are dropped and created again. Not for by / st, whose scripts do
+their own download.
 """
 
 import argparse
@@ -653,15 +654,15 @@ def run_state(state, job_id, be_update_path=None, skip_download=False):
     run([py, SCRIPT_DIR / 'make_nas.py', '--job-id=%s' % job_id, state])
 
     # Before the zip and the database work, so a malformed file stops the run early.
-    # Skipped with the download: the files are the ones an earlier run of this job
-    # downloaded, so checking them again is left out.
+    # Both skipped with the download: the files are the ones an earlier run of this
+    # job downloaded, so checking and zipping them again is left out.
     if not skip_download:
         started = datetime.now()
         validate_nas_files(state, job_id)
         print('# TimeLog - %s XML validation elapsed %s' % (state, elapsed(started, datetime.now())))
-    started = datetime.now()
-    archive_nas_files(state, job_id)
-    print('# TimeLog - %s Archive NAS files elapsed %s' % (state, elapsed(started, datetime.now())))
+        started = datetime.now()
+        archive_nas_files(state, job_id)
+        print('# TimeLog - %s Archive NAS files elapsed %s' % (state, elapsed(started, datetime.now())))
 
     # An `update` state writes differentially into the database that is already
     # live, so there is nothing to create, promote or swap -- doing any of those
@@ -748,7 +749,8 @@ def build_parser():
                              'required for be, rejected for any other state')
     parser.add_argument('--skip-download', action='store_true',
                         help='reuse the data an earlier run of --job-id downloaded: '
-                             'skip the download and the XML check (needs --job-id; '
+                             'skip the download, the XML check and the nas.zip '
+                             'archive (needs --job-id; '
                              'not for by / st)')
     parser.add_argument('--list', action='store_true',
                         help='print the known state abbreviations and exit')
